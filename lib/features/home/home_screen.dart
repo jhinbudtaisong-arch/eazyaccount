@@ -22,10 +22,12 @@ class HomeScreen extends StatefulWidget {
     required this.onRefresh,
     required this.onPreviewText,
     required this.onSaveParsedEntry,
+    required this.onTogglePendingEntry,
     required this.onOpenDetails,
     required this.isDarkMode,
     required this.onToggleThemeMode,
     this.errorMessage,
+    this.speechService,
   });
 
   final List<MoneyEntry> entries;
@@ -35,35 +37,41 @@ class HomeScreen extends StatefulWidget {
   final Future<void> Function() onRefresh;
   final Future<ParsedMoneyEntry> Function(String rawText) onPreviewText;
   final Future<void> Function(ParsedMoneyEntry entry) onSaveParsedEntry;
+  final Future<void> Function(String id) onTogglePendingEntry;
   final VoidCallback onOpenDetails;
   final bool isDarkMode;
   final VoidCallback onToggleThemeMode;
+  final SpeechRecognitionService? speechService;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  static const Duration _autoSilenceTimeout = Duration(minutes: 2);
-  static const Duration _autoSessionDuration = Duration(hours: 1);
+  static const Duration _speechSilenceTimeout = Duration(seconds: 10);
+  static const Duration _speechSessionDuration = Duration(hours: 1);
 
   final TextEditingController _textController = TextEditingController(
     text: 'ขายข้าว 50 น้ำ 20 ซื้อถุง 30',
   );
-  final SpeechRecognitionService _speechService = SpeechRecognitionService();
+  late final SpeechRecognitionService _speechService;
   VoiceMode _mode = VoiceMode.push;
   bool _isListening = false;
   bool _isSubmittingSpeech = false;
-  bool _autoRestarting = false;
-  Timer? _autoStopTimer;
+  bool _speechSubmissionAttempted = false;
   String? _speechTranscript;
   String? _speechStatus;
   String? _speechError;
   ParsedMoneyEntry? _pendingEntry;
 
   @override
+  void initState() {
+    super.initState();
+    _speechService = widget.speechService ?? SpeechRecognitionService();
+  }
+
+  @override
   void dispose() {
-    _autoStopTimer?.cancel();
     _speechService.cancel();
     _textController.dispose();
     super.dispose();
@@ -134,7 +142,6 @@ class _HomeScreenState extends State<HomeScreen> {
   void _pauseAutoForReview() {
     if (_mode != VoiceMode.auto) return;
 
-    _clearAutoTimer();
     if (_speechService.isListening) {
       unawaited(_speechService.stop());
     }
@@ -142,7 +149,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _handleMicPressed() async {
     if (_mode != VoiceMode.push) {
-      _clearAutoTimer();
       setState(() => _mode = VoiceMode.push);
     }
 
@@ -164,14 +170,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _startListening() async {
-    if (_mode == VoiceMode.auto) {
-      _resetAutoSilenceTimer();
-    }
-
     setState(() {
       _speechError = null;
       _speechStatus = 'กำลังขอสิทธิ์ไมโครโฟน...';
       _speechTranscript = null;
+      _speechSubmissionAttempted = false;
     });
 
     final available = await _speechService.initialize(
@@ -181,7 +184,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (!mounted) return;
     if (!available) {
-      _clearAutoTimer();
       setState(() {
         _isListening = false;
         _speechStatus = null;
@@ -193,15 +195,14 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _isListening = true;
       _speechStatus = _mode == VoiceMode.auto
-          ? 'Auto กำลังฟัง จะหยุดเมื่อไม่มีเสียงพูด 2 นาที'
-          : 'พูดรายการบัญชีได้เลย';
+          ? 'Auto กำลังฟัง พูดได้หลายประโยค จะหยุดเมื่อเงียบ 10 วินาที'
+          : 'พูดได้หลายประโยค จะหยุดเมื่อเงียบ 10 วินาที';
     });
 
     try {
       await _listenOnce();
     } catch (error) {
       if (!mounted) return;
-      _clearAutoTimer();
       setState(() {
         _isListening = false;
         _speechStatus = null;
@@ -213,73 +214,18 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _listenOnce() {
     return _speechService.startListening(
       onText: _handleSpeechText,
-      listenFor: _mode == VoiceMode.auto
-          ? _autoSessionDuration
-          : const Duration(seconds: 30),
-      pauseFor: _mode == VoiceMode.auto
-          ? _autoSilenceTimeout
-          : const Duration(seconds: 4),
+      listenFor: _speechSessionDuration,
+      pauseFor: _speechSilenceTimeout,
     );
   }
 
   Future<void> _stopListening({String? status}) async {
-    _clearAutoTimer();
     await _speechService.stop();
     if (!mounted) return;
     setState(() {
       _isListening = false;
       _speechStatus = status;
     });
-  }
-
-  void _clearAutoTimer() {
-    _autoStopTimer?.cancel();
-    _autoStopTimer = null;
-    _autoRestarting = false;
-  }
-
-  void _resetAutoSilenceTimer() {
-    if (_mode != VoiceMode.auto) return;
-
-    _autoStopTimer?.cancel();
-    _autoStopTimer = Timer(_autoSilenceTimeout, () {
-      if (mounted && _mode == VoiceMode.auto) {
-        _stopListening(
-          status: 'Auto หยุดฟังแล้ว เพราะไม่มีเสียงพูด 2 นาที',
-        );
-      }
-    });
-  }
-
-  Future<void> _restartAutoListeningIfNeeded() async {
-    if (_mode != VoiceMode.auto ||
-        _autoStopTimer == null ||
-        _autoRestarting ||
-        _isSubmittingSpeech ||
-        _hasPendingEntry) {
-      return;
-    }
-
-    _autoRestarting = true;
-    try {
-      await _speechService.stop();
-      if (!mounted || _mode != VoiceMode.auto) return;
-      setState(() {
-        _isListening = true;
-        _speechStatus = 'Auto กำลังฟัง จะหยุดเมื่อไม่มีเสียงพูด 2 นาที';
-      });
-      await _listenOnce();
-    } catch (error) {
-      if (!mounted) return;
-      _clearAutoTimer();
-      setState(() {
-        _isListening = false;
-        _speechStatus = null;
-        _speechError = '$error';
-      });
-    } finally {
-      _autoRestarting = false;
-    }
   }
 
   void _handleSpeechStatus(String status) {
@@ -289,15 +235,13 @@ class _HomeScreenState extends State<HomeScreen> {
       _isListening = _speechService.isListening;
     });
 
-    if ((status == 'done' || status == 'notListening') &&
-        _mode == VoiceMode.auto) {
-      unawaited(_restartAutoListeningIfNeeded());
+    if (status == 'done' || status == 'notListening') {
+      unawaited(_submitRecognizedSpeechIfReady());
     }
   }
 
   void _handleSpeechError(String message) {
     if (!mounted) return;
-    _clearAutoTimer();
     setState(() {
       _isListening = false;
       _speechStatus = null;
@@ -305,7 +249,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  Future<void> _handleSpeechText(String text, bool isFinal) async {
+  Future<void> _handleSpeechText(String text, bool _) async {
     if (!mounted || text.isEmpty) return;
 
     setState(() {
@@ -313,20 +257,32 @@ class _HomeScreenState extends State<HomeScreen> {
       _textController.text = text;
       _textController.selection = TextSelection.collapsed(offset: text.length);
     });
-    if (_mode == VoiceMode.auto) {
-      _resetAutoSilenceTimer();
+  }
+
+  Future<void> _submitRecognizedSpeechIfReady() async {
+    if (!mounted ||
+        _isSubmittingSpeech ||
+        _hasPendingEntry ||
+        _speechSubmissionAttempted) {
+      return;
     }
 
-    if (!isFinal || _isSubmittingSpeech) return;
+    _speechSubmissionAttempted = true;
+    final text = _speechTranscript?.trim() ?? '';
+    if (text.isEmpty) {
+      setState(() {
+        _isListening = false;
+        _speechStatus = 'หยุดฟังแล้ว เพราะไม่มีเสียงพูด 10 วินาที';
+      });
+      return;
+    }
 
     if (!_canAutoSaveSpeechText(text)) {
       setState(() {
+        _isListening = false;
         _speechStatus =
             'ถอดเสียงได้ไม่ชัดพอ ยังไม่บันทึก กรุณาลองพูดใหม่หรือแก้ข้อความแล้วกดบันทึก';
       });
-      if (_mode == VoiceMode.auto) {
-        unawaited(_restartAutoListeningIfNeeded());
-      }
       return;
     }
 
@@ -346,9 +302,6 @@ class _HomeScreenState extends State<HomeScreen> {
     } finally {
       if (mounted) {
         setState(() => _isSubmittingSpeech = false);
-        if (_mode == VoiceMode.auto && !_hasPendingEntry) {
-          unawaited(_restartAutoListeningIfNeeded());
-        }
       }
     }
   }
@@ -399,7 +352,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String _speechStatusText(String status) {
     switch (status) {
       case 'listening':
-        return 'กำลังฟัง...';
+        return 'กำลังฟัง พูดได้หลายประโยค จะหยุดเมื่อเงียบ 10 วินาที';
       case 'done':
       case 'notListening':
         return 'หยุดฟังแล้ว';
@@ -504,7 +457,10 @@ class _HomeScreenState extends State<HomeScreen> {
               if (widget.isLoading)
                 const Center(child: CircularProgressIndicator())
               else
-                HistoryList(entries: widget.entries),
+                HistoryList(
+                  entries: widget.entries,
+                  onTogglePendingEntry: widget.onTogglePendingEntry,
+                ),
               const SizedBox(height: 16),
               FilledButton.icon(
                 onPressed: widget.onOpenDetails,

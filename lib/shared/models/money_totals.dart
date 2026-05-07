@@ -22,6 +22,8 @@ class MoneyTotals {
     num expense = 0;
 
     for (final entry in entries) {
+      if (entry.isDiscarded) continue;
+
       switch (entry.type) {
         case EntryType.income:
           income += entry.amount;

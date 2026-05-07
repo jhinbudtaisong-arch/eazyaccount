@@ -41,8 +41,8 @@ class SpeechRecognitionService {
 
   Future<void> startListening({
     required SpeechTextCallback onText,
-    Duration listenFor = const Duration(seconds: 30),
-    Duration pauseFor = const Duration(seconds: 4),
+    Duration listenFor = const Duration(hours: 1),
+    Duration pauseFor = const Duration(seconds: 10),
   }) async {
     if (!_initialized) {
       throw StateError('Speech recognition is not initialized.');

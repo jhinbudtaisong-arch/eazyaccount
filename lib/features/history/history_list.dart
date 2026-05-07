@@ -5,9 +5,14 @@ import '../../shared/theme/app_theme.dart';
 import '../../shared/utils/formatters.dart';
 
 class HistoryList extends StatefulWidget {
-  const HistoryList({super.key, required this.entries});
+  const HistoryList({
+    super.key,
+    required this.entries,
+    required this.onTogglePendingEntry,
+  });
 
   final List<MoneyEntry> entries;
+  final Future<void> Function(String id) onTogglePendingEntry;
 
   @override
   State<HistoryList> createState() => _HistoryListState();
@@ -51,7 +56,14 @@ class _HistoryListState extends State<HistoryList> {
           compact: compact,
           children: [
             for (final entry in recentEntries)
-              HistoryListTile(entry: entry, compact: compact),
+              HistoryListTile(
+                entry: entry,
+                compact: compact,
+                isCompleted: entry.isDiscarded,
+                onTap: entry.isPending
+                    ? () => widget.onTogglePendingEntry(entry.id)
+                    : null,
+              ),
           ],
         );
         final shoppingList = _HistorySection(
@@ -64,8 +76,12 @@ class _HistoryListState extends State<HistoryList> {
               HistoryListTile(
                 entry: entry,
                 compact: true,
-                isCompleted: _completedShoppingIds.contains(entry.id),
-                onTap: () => _toggleShoppingItem(entry.id),
+                isCompleted: entry.isPending
+                    ? entry.isDiscarded
+                    : _completedShoppingIds.contains(entry.id),
+                onTap: entry.isPending
+                    ? () => widget.onTogglePendingEntry(entry.id)
+                    : () => _toggleShoppingItem(entry.id),
               ),
           ],
         );
@@ -232,7 +248,9 @@ class HistoryListTile extends StatelessWidget {
       subtitle: compact
           ? null
           : Text(
-              formatTime(entry.createdAt),
+              entry.isPending
+                  ? '${formatTime(entry.createdAt)} · รอปิดวัน'
+                  : formatTime(entry.createdAt),
               style: TextStyle(color: colors.muted),
             ),
       trailing: _HistoryAmount(

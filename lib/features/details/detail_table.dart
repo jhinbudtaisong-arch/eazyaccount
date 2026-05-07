@@ -5,9 +5,14 @@ import '../../shared/theme/app_theme.dart';
 import '../../shared/utils/formatters.dart';
 
 class DetailTable extends StatelessWidget {
-  const DetailTable({super.key, required this.entries});
+  const DetailTable({
+    super.key,
+    required this.entries,
+    required this.onTogglePendingEntry,
+  });
 
   final List<MoneyEntry> entries;
+  final Future<void> Function(String id) onTogglePendingEntry;
 
   @override
   Widget build(BuildContext context) {
@@ -27,7 +32,10 @@ class DetailTable extends StatelessWidget {
                     ),
                     itemBuilder: (context, index) {
                       final reverseIndex = entries.length - 1 - index;
-                      return DetailRow(entry: entries[reverseIndex]);
+                      return DetailRow(
+                        entry: entries[reverseIndex],
+                        onTogglePendingEntry: onTogglePendingEntry,
+                      );
                     },
                   ),
           ),
@@ -77,44 +85,94 @@ class HeaderText extends StatelessWidget {
 }
 
 class DetailRow extends StatelessWidget {
-  const DetailRow({super.key, required this.entry});
+  const DetailRow({
+    super.key,
+    required this.entry,
+    required this.onTogglePendingEntry,
+  });
 
   final MoneyEntry entry;
+  final Future<void> Function(String id) onTogglePendingEntry;
 
   @override
   Widget build(BuildContext context) {
     final isExpense = entry.type == EntryType.expense;
+    final colors = context.eazyColors;
+    final titleStyle = TextStyle(
+      color: entry.isDiscarded ? colors.muted : colors.ink,
+      fontWeight: FontWeight.w700,
+      decoration:
+          entry.isDiscarded ? TextDecoration.lineThrough : TextDecoration.none,
+      decorationThickness: 2,
+    );
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-      child: Row(
-        children: [
-          Expanded(
-            flex: 2,
-            child: Text(
-              entry.title,
-              style: const TextStyle(fontWeight: FontWeight.w700),
-            ),
-          ),
-          Expanded(
-            child: Text(
-              isExpense ? '${formatMoney(entry.amount)} ฿' : '-',
-              style: TextStyle(
-                color: isExpense ? expenseColor : mutedColor,
-                fontWeight: isExpense ? FontWeight.w800 : FontWeight.w500,
+    return InkWell(
+      onTap: entry.isPending ? () => onTogglePendingEntry(entry.id) : null,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        child: Row(
+          children: [
+            Expanded(
+              flex: 2,
+              child: Row(
+                children: [
+                  if (entry.isPending) ...[
+                    Icon(
+                      entry.isDiscarded
+                          ? Icons.check_circle_rounded
+                          : Icons.schedule_rounded,
+                      size: 16,
+                      color: entry.isDiscarded ? colors.muted : colors.warning,
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  Expanded(
+                    child: Text(
+                      entry.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: titleStyle,
+                    ),
+                  ),
+                ],
               ),
             ),
-          ),
-          Expanded(
-            child: Text(
-              isExpense ? '-' : '${formatMoney(entry.amount)} ฿',
-              style: TextStyle(
-                color: isExpense ? mutedColor : incomeColor,
-                fontWeight: isExpense ? FontWeight.w500 : FontWeight.w800,
+            Expanded(
+              child: Text(
+                isExpense ? '${formatMoney(entry.amount)} ฿' : '-',
+                style: TextStyle(
+                  color: entry.isDiscarded
+                      ? colors.muted
+                      : isExpense
+                          ? expenseColor
+                          : mutedColor,
+                  fontWeight: isExpense ? FontWeight.w800 : FontWeight.w500,
+                  decoration: entry.isDiscarded
+                      ? TextDecoration.lineThrough
+                      : TextDecoration.none,
+                  decorationThickness: 2,
+                ),
               ),
             ),
-          ),
-        ],
+            Expanded(
+              child: Text(
+                isExpense ? '-' : '${formatMoney(entry.amount)} ฿',
+                style: TextStyle(
+                  color: entry.isDiscarded
+                      ? colors.muted
+                      : isExpense
+                          ? mutedColor
+                          : incomeColor,
+                  fontWeight: isExpense ? FontWeight.w500 : FontWeight.w800,
+                  decoration: entry.isDiscarded
+                      ? TextDecoration.lineThrough
+                      : TextDecoration.none,
+                  decorationThickness: 2,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "mock:supabase": "node tools/mobile_mock_supabase.js"
+  },
   "devDependencies": {
     "supabase": "^2.95.5"
   }

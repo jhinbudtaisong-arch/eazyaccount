@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'features/auth/auth_screen.dart';
@@ -5,6 +7,7 @@ import 'features/details/detail_screen.dart';
 import 'features/home/home_screen.dart';
 import 'features/settings/settings_screen.dart';
 import 'features/summary/summary_screen.dart';
+import 'shared/models/member_profile.dart';
 import 'shared/models/money_entry.dart';
 import 'shared/models/parsed_money_entry.dart';
 import 'shared/services/accounting_repository.dart';
@@ -96,13 +99,18 @@ class _AuthGateState extends State<AuthGate> {
     }
   }
 
-  Future<void> _signUp(String email, String password) async {
+  Future<void> _signUp(
+    String email,
+    String password,
+    String displayName,
+  ) async {
     setState(() => _authError = null);
 
     try {
       await widget.repository.signUpWithEmailPassword(
         email: email,
         password: password,
+        displayName: displayName,
       );
       if (mounted) setState(() => _isSignedIn = true);
     } catch (error) {
@@ -162,13 +170,29 @@ class _AppShellState extends State<AppShell> {
   int _selectedIndex = 0;
   bool _isLoading = true;
   bool _isSaving = false;
+  bool _isMemberLoading = true;
+  bool _isMemberSaving = false;
   String? _errorMessage;
-  List<MoneyEntry> _entries = const [];
+  String? _memberError;
+  List<MoneyEntry> _savedEntries = const [];
+  List<MoneyEntry> _pendingEntries = const [];
+  MemberProfile? _member;
+  Timer? _midnightTimer;
+
+  List<MoneyEntry> get _entries => [..._savedEntries, ..._pendingEntries];
 
   @override
   void initState() {
     super.initState();
     _loadEntries();
+    _loadMember();
+    _scheduleMidnightFlush();
+  }
+
+  @override
+  void dispose() {
+    _midnightTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadEntries() async {
@@ -178,13 +202,60 @@ class _AppShellState extends State<AppShell> {
     });
 
     try {
+      await widget.repository.flushDuePendingEntries();
       final entries = await widget.repository.fetchEntries();
+      final pendingEntries = await widget.repository.fetchPendingEntries();
       if (!mounted) return;
-      setState(() => _entries = entries);
+      setState(() {
+        _savedEntries = entries;
+        _pendingEntries = pendingEntries;
+      });
     } catch (error) {
       if (mounted) setState(() => _errorMessage = '$error');
     } finally {
       if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _flushPendingEntries() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      await widget.repository.flushDuePendingEntries();
+      final entries = await widget.repository.fetchEntries();
+      final pendingEntries = await widget.repository.fetchPendingEntries();
+      if (!mounted) return;
+      setState(() {
+        _savedEntries = entries;
+        _pendingEntries = pendingEntries;
+      });
+    } catch (error) {
+      if (mounted) setState(() => _errorMessage = '$error');
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        _scheduleMidnightFlush();
+      }
+    }
+  }
+
+  Future<void> _loadMember() async {
+    setState(() {
+      _isMemberLoading = true;
+      _memberError = null;
+    });
+
+    try {
+      final member = await widget.repository.fetchCurrentMember();
+      if (!mounted) return;
+      setState(() => _member = member);
+    } catch (error) {
+      if (mounted) setState(() => _memberError = '$error');
+    } finally {
+      if (mounted) setState(() => _isMemberLoading = false);
     }
   }
 
@@ -211,15 +282,78 @@ class _AppShellState extends State<AppShell> {
     });
 
     try {
-      await widget.repository.saveParsedEntry(entry);
-      final entries = await widget.repository.fetchEntries();
+      final pendingEntries =
+          await widget.repository.addPendingParsedEntry(entry);
       if (!mounted) return;
-      setState(() => _entries = entries);
+      setState(() => _pendingEntries = pendingEntries);
     } catch (error) {
       if (mounted) setState(() => _errorMessage = '$error');
       rethrow;
     } finally {
       if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  Future<void> _togglePendingEntry(String id) async {
+    setState(() => _errorMessage = null);
+
+    try {
+      final pendingEntries = await widget.repository.togglePendingEntry(id);
+      if (!mounted) return;
+      setState(() => _pendingEntries = pendingEntries);
+    } catch (error) {
+      if (mounted) setState(() => _errorMessage = '$error');
+    }
+  }
+
+  void _scheduleMidnightFlush() {
+    _midnightTimer?.cancel();
+    final now = DateTime.now();
+    final nextMidnight = DateTime(now.year, now.month, now.day + 1);
+    _midnightTimer = Timer(nextMidnight.difference(now), _flushPendingEntries);
+  }
+
+  Future<MemberProfile> _updateMemberProfile({
+    required String displayName,
+    required String shopName,
+    required String phone,
+  }) async {
+    setState(() {
+      _isMemberSaving = true;
+      _memberError = null;
+    });
+
+    try {
+      final member = await widget.repository.updateMemberProfile(
+        displayName: displayName,
+        shopName: shopName,
+        phone: phone,
+      );
+      if (mounted) setState(() => _member = member);
+      return member;
+    } catch (error) {
+      if (mounted) setState(() => _memberError = '$error');
+      rethrow;
+    } finally {
+      if (mounted) setState(() => _isMemberSaving = false);
+    }
+  }
+
+  Future<MemberProfile> _changeMemberPlan(MemberPlan plan) async {
+    setState(() {
+      _isMemberSaving = true;
+      _memberError = null;
+    });
+
+    try {
+      final member = await widget.repository.changeMemberPlan(plan);
+      if (mounted) setState(() => _member = member);
+      return member;
+    } catch (error) {
+      if (mounted) setState(() => _memberError = '$error');
+      rethrow;
+    } finally {
+      if (mounted) setState(() => _isMemberSaving = false);
     }
   }
 
@@ -238,6 +372,7 @@ class _AppShellState extends State<AppShell> {
         onRefresh: _loadEntries,
         onPreviewText: _previewRawText,
         onSaveParsedEntry: _saveParsedEntry,
+        onTogglePendingEntry: _togglePendingEntry,
         onOpenDetails: () => setState(() => _selectedIndex = 1),
         isDarkMode: widget.isDarkMode,
         onToggleThemeMode: widget.onToggleThemeMode,
@@ -246,9 +381,19 @@ class _AppShellState extends State<AppShell> {
         entries: _entries,
         isLoading: _isLoading,
         onRefresh: _loadEntries,
+        onTogglePendingEntry: _togglePendingEntry,
       ),
       SummaryScreen(entries: _entries),
-      SettingsScreen(onSignOut: _signOut),
+      SettingsScreen(
+        member: _member,
+        isMemberLoading: _isMemberLoading,
+        isMemberSaving: _isMemberSaving,
+        memberError: _memberError,
+        onRefreshMember: _loadMember,
+        onUpdateMemberProfile: _updateMemberProfile,
+        onChangeMemberPlan: _changeMemberPlan,
+        onSignOut: _signOut,
+      ),
     ];
 
     return Scaffold(

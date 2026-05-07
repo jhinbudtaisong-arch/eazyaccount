@@ -2,6 +2,7 @@ import 'package:eazyaccount/features/auth/auth_screen.dart';
 import 'package:eazyaccount/features/home/home_screen.dart';
 import 'package:eazyaccount/shared/models/money_entry.dart';
 import 'package:eazyaccount/shared/models/parsed_money_entry.dart';
+import 'package:eazyaccount/shared/services/speech_recognition_service.dart';
 import 'package:eazyaccount/shared/theme/app_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -12,7 +13,7 @@ void main() {
       MaterialApp(
         home: AuthScreen(
           onSignIn: (_, __) async {},
-          onSignUp: (_, __) async {},
+          onSignUp: (_, __, ___) async {},
         ),
       ),
     );
@@ -54,6 +55,7 @@ void main() {
             );
           },
           onSaveParsedEntry: (entry) async => savedEntry = entry,
+          onTogglePendingEntry: (_) async {},
           onOpenDetails: () {},
           isDarkMode: false,
           onToggleThemeMode: () {},
@@ -83,4 +85,213 @@ void main() {
     expect(savedEntry?.rawText, 'first\nsecond');
     expect(savedEntry?.items.map((item) => item.name), ['first', 'second']);
   });
+
+  testWidgets('speech listens for multiple sentences until 10 seconds silence',
+      (tester) async {
+    tester.view.physicalSize = const Size(1000, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final speech = _FakeSpeechRecognitionService();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildAppTheme(),
+        home: HomeScreen(
+          entries: const [],
+          isLoading: false,
+          isSaving: false,
+          onRefresh: () async {},
+          onPreviewText: (rawText) async => ParsedMoneyEntry(
+            rawText: rawText,
+            items: [
+              ParsedMoneyItem(
+                name: rawText,
+                amount: 50,
+                type: EntryType.expense,
+              ),
+            ],
+          ),
+          onSaveParsedEntry: (_) async {},
+          onTogglePendingEntry: (_) async {},
+          onOpenDetails: () {},
+          isDarkMode: false,
+          onToggleThemeMode: () {},
+          speechService: speech,
+        ),
+      ),
+    );
+
+    await tester.tap(find.byIcon(Icons.mic_rounded));
+    await tester.pump();
+
+    expect(speech.listenFor, const Duration(hours: 1));
+    expect(speech.pauseFor, const Duration(seconds: 10));
+    expect(find.textContaining('10 วินาที'), findsOneWidget);
+  });
+
+  testWidgets('speech waits for listening to stop before parsing final text',
+      (tester) async {
+    tester.view.physicalSize = const Size(1000, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final speech = _FakeSpeechRecognitionService();
+    var previewCount = 0;
+    String? previewRawText;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildAppTheme(),
+        home: HomeScreen(
+          entries: const [],
+          isLoading: false,
+          isSaving: false,
+          onRefresh: () async {},
+          onPreviewText: (rawText) async {
+            previewCount++;
+            previewRawText = rawText;
+            return ParsedMoneyEntry(
+              rawText: rawText,
+              items: [
+                const ParsedMoneyItem(
+                  name: 'ขายข้าว',
+                  amount: 50,
+                  type: EntryType.expense,
+                ),
+              ],
+            );
+          },
+          onSaveParsedEntry: (_) async {},
+          onTogglePendingEntry: (_) async {},
+          onOpenDetails: () {},
+          isDarkMode: false,
+          onToggleThemeMode: () {},
+          speechService: speech,
+        ),
+      ),
+    );
+
+    await tester.tap(find.byIcon(Icons.mic_rounded));
+    await tester.pump();
+
+    speech.emit('ขายข้าว 50 ซื้อถุง 30', isFinal: true);
+    await tester.pump();
+
+    expect(previewCount, 0);
+
+    speech.finish();
+    await tester.pumpAndSettle();
+
+    expect(previewCount, 1);
+    expect(previewRawText, 'ขายข้าว 50 ซื้อถุง 30');
+    expect(find.text('ตรวจรายการก่อนบันทึก'), findsOneWidget);
+  });
+
+  testWidgets('speech does not parse manual placeholder when no voice is heard',
+      (tester) async {
+    tester.view.physicalSize = const Size(1000, 2400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final speech = _FakeSpeechRecognitionService();
+    var previewCount = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildAppTheme(),
+        home: HomeScreen(
+          entries: const [],
+          isLoading: false,
+          isSaving: false,
+          onRefresh: () async {},
+          onPreviewText: (rawText) async {
+            previewCount++;
+            return ParsedMoneyEntry(
+              rawText: rawText,
+              items: [
+                ParsedMoneyItem(
+                  name: rawText,
+                  amount: 50,
+                  type: EntryType.expense,
+                ),
+              ],
+            );
+          },
+          onSaveParsedEntry: (_) async {},
+          onTogglePendingEntry: (_) async {},
+          onOpenDetails: () {},
+          isDarkMode: false,
+          onToggleThemeMode: () {},
+          speechService: speech,
+        ),
+      ),
+    );
+
+    await tester.tap(find.byIcon(Icons.mic_rounded));
+    await tester.pump();
+
+    speech.finish();
+    await tester.pumpAndSettle();
+
+    expect(previewCount, 0);
+    expect(
+        find.text('หยุดฟังแล้ว เพราะไม่มีเสียงพูด 10 วินาที'), findsOneWidget);
+  });
+}
+
+class _FakeSpeechRecognitionService extends SpeechRecognitionService {
+  SpeechTextCallback? _onText;
+  SpeechStatusCallback? _onStatus;
+  bool _isListening = false;
+
+  Duration? listenFor;
+  Duration? pauseFor;
+
+  @override
+  bool get isListening => _isListening;
+
+  @override
+  Future<bool> initialize({
+    SpeechStatusCallback? onStatus,
+    SpeechErrorCallback? onError,
+  }) async {
+    _onStatus = onStatus;
+    return true;
+  }
+
+  @override
+  Future<void> startListening({
+    required SpeechTextCallback onText,
+    Duration listenFor = const Duration(hours: 1),
+    Duration pauseFor = const Duration(seconds: 10),
+  }) async {
+    _onText = onText;
+    this.listenFor = listenFor;
+    this.pauseFor = pauseFor;
+    _isListening = true;
+    _onStatus?.call('listening');
+  }
+
+  @override
+  Future<void> stop() async {
+    finish();
+  }
+
+  @override
+  Future<void> cancel() async {
+    _isListening = false;
+  }
+
+  void emit(String text, {bool isFinal = false}) {
+    _onText?.call(text, isFinal);
+  }
+
+  void finish() {
+    _isListening = false;
+    _onStatus?.call('done');
+  }
 }

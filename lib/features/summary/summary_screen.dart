@@ -29,7 +29,9 @@ class _SummaryScreenState extends State<SummaryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final totals = MoneyTotals.fromEntries(widget.entries);
+    final totals = MoneyTotals.fromEntries(
+      filterEntriesForReportRange(widget.entries, _range),
+    );
     final dailySummaries = _buildDailySummaries(widget.entries);
     final selectedSummary =
         _selectedDay == null ? null : dailySummaries[_dayKey(_selectedDay!)];
@@ -586,6 +588,8 @@ Map<DateTime, _DailySummary> _buildDailySummaries(List<MoneyEntry> entries) {
   final summaries = <DateTime, _DailySummary>{};
 
   for (final entry in entries) {
+    if (entry.isDiscarded) continue;
+
     final key = _dayKey(entry.createdAt);
     summaries.putIfAbsent(key, _DailySummary.new).add(entry);
   }
@@ -612,6 +616,42 @@ List<DateTime?> _monthCells(DateTime month) {
 
 DateTime _dayKey(DateTime value) =>
     DateTime(value.year, value.month, value.day);
+
+List<MoneyEntry> filterEntriesForReportRange(
+  Iterable<MoneyEntry> entries,
+  ReportRange range, {
+  DateTime? now,
+}) {
+  final current = now ?? DateTime.now();
+  final start = reportRangeStart(range, now: current);
+  final end = reportRangeEnd(range, now: current);
+
+  return entries
+      .where((entry) =>
+          !entry.createdAt.isBefore(start) && entry.createdAt.isBefore(end))
+      .toList(growable: false);
+}
+
+DateTime reportRangeStart(ReportRange range, {DateTime? now}) {
+  final current = now ?? DateTime.now();
+  final today = DateTime(current.year, current.month, current.day);
+
+  return switch (range) {
+    ReportRange.today => today,
+    ReportRange.week => today.subtract(Duration(days: today.weekday - 1)),
+    ReportRange.month => DateTime(current.year, current.month),
+  };
+}
+
+DateTime reportRangeEnd(ReportRange range, {DateTime? now}) {
+  final start = reportRangeStart(range, now: now);
+
+  return switch (range) {
+    ReportRange.today => DateTime(start.year, start.month, start.day + 1),
+    ReportRange.week => start.add(const Duration(days: 7)),
+    ReportRange.month => DateTime(start.year, start.month + 1),
+  };
+}
 
 Color _summaryColor(_DailySummary? summary, EazyColors colors) {
   if (summary == null || summary.entries.isEmpty) return colors.border;

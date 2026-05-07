@@ -10,11 +10,13 @@ class DetailScreen extends StatelessWidget {
     required this.entries,
     required this.isLoading,
     required this.onRefresh,
+    required this.onTogglePendingEntry,
   });
 
   final List<MoneyEntry> entries;
   final bool isLoading;
   final Future<void> Function() onRefresh;
+  final Future<void> Function(String id) onTogglePendingEntry;
 
   @override
   Widget build(BuildContext context) {
@@ -44,7 +46,7 @@ class DetailScreen extends StatelessWidget {
               ),
               const SizedBox(height: 6),
               Text(
-                'ข้อมูลนี้โหลดจากตาราง entry_items ภายใต้ RLS ของผู้ใช้ทดสอบ',
+                'รายการวันนี้ยังรอปิดวัน แตะรายการรอปิดวันเพื่อขีดฆ่าก่อนบันทึกจริง',
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: mutedColor,
                     ),
@@ -53,7 +55,10 @@ class DetailScreen extends StatelessWidget {
               Expanded(
                 child: isLoading
                     ? const Center(child: CircularProgressIndicator())
-                    : DetailTable(entries: entries),
+                    : DetailTable(
+                        entries: entries,
+                        onTogglePendingEntry: onTogglePendingEntry,
+                      ),
               ),
             ],
           ),

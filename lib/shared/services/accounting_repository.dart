@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase/supabase.dart';
 
+import '../models/member_profile.dart';
 import '../models/money_entry.dart';
 import '../models/parsed_money_entry.dart';
 import 'supabase_config.dart';
@@ -11,6 +12,31 @@ class AccountingRepository {
   AccountingRepository(this._client);
 
   static const _sessionStorageKey = 'eazyaccount.supabase.session.v1';
+  static const _pendingEntriesStorageKey = 'eazyaccount.pending.entries.v1';
+  static const _memberColumns =
+      'id, email, display_name, shop_name, phone, member_plan, member_status, created_at, updated_at';
+  static const _knownShoppingListWords = [
+    'น้ำแข็ง',
+    'น้ำปลา',
+    'น้ำตาล',
+    'น้ำมัน',
+    'แก้วน้ำ',
+    'ผักชี',
+    'ฝักชี',
+    'ฝรั่ง',
+    'มาม่า',
+    'บะหมี่',
+    'แก้ว',
+    'ข้าว',
+    'หมู',
+    'ไก่',
+    'ปลา',
+    'ผัก',
+    'นม',
+    'ไข่',
+    'ถุง',
+    'น้ำ',
+  ];
 
   final SupabaseClient _client;
   String? _accessToken;
@@ -58,10 +84,18 @@ class AccountingRepository {
   Future<void> signUpWithEmailPassword({
     required String email,
     required String password,
+    required String displayName,
   }) async {
+    final cleanDisplayName = displayName.trim();
     final response = await _client.auth.signUp(
       email: email.trim(),
       password: password,
+      data: cleanDisplayName.isEmpty
+          ? null
+          : {
+              'display_name': cleanDisplayName,
+              'shop_name': cleanDisplayName,
+            },
     );
 
     if (response.session == null) {
@@ -80,54 +114,87 @@ class AccountingRepository {
     await _client.auth.signOut();
   }
 
+  Future<MemberProfile> fetchCurrentMember() async {
+    final user = _requireCurrentUser('กรุณาเข้าสู่ระบบก่อนโหลดข้อมูลสมาชิก');
+    final row = await _client
+        .from('users')
+        .select(_memberColumns)
+        .eq('id', user.id)
+        .maybeSingle();
+
+    return _memberFromRow(row);
+  }
+
+  Future<MemberProfile> updateMemberProfile({
+    required String displayName,
+    required String shopName,
+    required String phone,
+  }) async {
+    final user = _requireCurrentUser('กรุณาเข้าสู่ระบบก่อนแก้ไขข้อมูลสมาชิก');
+    final row = await _client
+        .from('users')
+        .update({
+          'display_name': displayName.trim(),
+          'shop_name': shopName.trim(),
+          'phone': phone.trim(),
+        })
+        .eq('id', user.id)
+        .select(_memberColumns)
+        .maybeSingle();
+
+    return _memberFromRow(row);
+  }
+
+  Future<MemberProfile> changeMemberPlan(MemberPlan plan) async {
+    final user = _requireCurrentUser('กรุณาเข้าสู่ระบบก่อนเปลี่ยนแพ็กเกจ');
+    final row = await _client
+        .from('users')
+        .update({
+          'member_plan': plan.value,
+          'member_status': 'active',
+          'plan_started_at': DateTime.now().toUtc().toIso8601String(),
+        })
+        .eq('id', user.id)
+        .select(_memberColumns)
+        .maybeSingle();
+
+    return _memberFromRow(row);
+  }
+
   Future<void> clearSavedSession() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_sessionStorageKey);
   }
 
   Future<List<MoneyEntry>> fetchEntries() async {
-    final rows = await _client
-        .from('entry_items')
-        .select('id, name, amount, type, created_at')
-        .order('created_at', ascending: false)
-        .limit(100);
+    final entryRows = await _client.rpc(
+      'get_entries_page',
+      params: {'page_size': 100},
+    );
 
-    return rows.reversed
+    if (entryRows is! List || entryRows.isEmpty) return const [];
+
+    final entryIds = [
+      for (final row in entryRows)
+        if (row is Map && row['id'] != null) row['id'].toString(),
+    ];
+    if (entryIds.isEmpty) return const [];
+
+    final itemRows = await _client
+        .from('entry_items')
+        .select('id, entry_id, name, amount, type, created_at')
+        .inFilter('entry_id', entryIds)
+        .order('created_at', ascending: false)
+        .limit(500);
+
+    return itemRows.reversed
         .map<MoneyEntry>((row) => MoneyEntry.fromEntryItem(row))
         .toList(growable: false);
   }
 
   Future<void> parseAndSave(String rawText) async {
-    final text = rawText.trim();
-    if (text.isEmpty) {
-      throw const FormatException('กรุณาพิมพ์รายการก่อนบันทึก');
-    }
-
-    _requireSignedIn('กรุณาเข้าสู่ระบบก่อนบันทึกรายการ');
-
-    final measuredPriceEntry = _parseMeasuredPriceText(text);
-    if (measuredPriceEntry != null) {
-      await saveParsedEntry(measuredPriceEntry);
-      return;
-    }
-
-    final shoppingListEntry = _parseShoppingListText(text);
-    if (shoppingListEntry != null) {
-      await saveParsedEntry(shoppingListEntry);
-      return;
-    }
-
-    final response = await _client.functions.invoke(
-      'ai-engine',
-      body: {
-        'raw_text': text,
-        'save': true,
-      },
-    );
-
-    if (response.status >= 400) {
-      throw StateError('บันทึกไม่สำเร็จ: ${response.data}');
-    }
+    final parsed = await parseText(rawText);
+    await addPendingParsedEntry(parsed);
   }
 
   Future<ParsedMoneyEntry> parseText(String rawText) async {
@@ -141,7 +208,8 @@ class AccountingRepository {
     final measuredPriceEntry = _parseMeasuredPriceText(text);
     if (measuredPriceEntry != null) return measuredPriceEntry;
 
-    final shoppingListEntry = _parseShoppingListText(text);
+    final shoppingListEntry =
+        AccountingRepository.tryParseShoppingListText(text);
     if (shoppingListEntry != null) return shoppingListEntry;
 
     final response = await _client.functions.invoke(
@@ -191,10 +259,138 @@ class AccountingRepository {
     );
   }
 
+  Future<List<MoneyEntry>> fetchPendingEntries() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_currentPendingEntriesStorageKey);
+    if (raw == null || raw.isEmpty) return const [];
+
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) return const [];
+      return decoded
+          .whereType<Map>()
+          .map((item) => MoneyEntry.fromJson(Map<String, dynamic>.from(item)))
+          .where((entry) => entry.id.isNotEmpty)
+          .toList(growable: false);
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Future<List<MoneyEntry>> addPendingParsedEntry(ParsedMoneyEntry entry) async {
+    final text = entry.rawText.trim();
+    if (text.isEmpty) {
+      throw const FormatException('ไม่มีข้อความต้นฉบับสำหรับบันทึก');
+    }
+    if (entry.items.isEmpty) {
+      throw const FormatException('ไม่มี tag ที่เหลือให้บันทึก');
+    }
+
+    _requireSignedIn('กรุณาเข้าสู่ระบบก่อนบันทึกรายการ');
+
+    final now = DateTime.now();
+    final baseId = now.microsecondsSinceEpoch;
+    final nextEntries = [
+      ...await fetchPendingEntries(),
+      for (var index = 0; index < entry.items.length; index++)
+        MoneyEntry(
+          id: 'pending-$baseId-$index',
+          title: entry.items[index].name,
+          amount: entry.items[index].amount,
+          type: entry.items[index].type,
+          createdAt: now,
+          isPending: true,
+        ),
+    ];
+    await _savePendingEntries(nextEntries);
+    return nextEntries;
+  }
+
+  Future<List<MoneyEntry>> togglePendingEntry(String id) async {
+    final entries = await fetchPendingEntries();
+    final nextEntries = [
+      for (final entry in entries)
+        entry.id == id
+            ? entry.copyWith(isDiscarded: !entry.isDiscarded)
+            : entry,
+    ];
+    await _savePendingEntries(nextEntries);
+    return nextEntries;
+  }
+
+  Future<List<MoneyEntry>> flushDuePendingEntries({DateTime? now}) async {
+    final pendingEntries = await fetchPendingEntries();
+    if (pendingEntries.isEmpty) return pendingEntries;
+
+    final today = _dayKey(now ?? DateTime.now());
+    final dueEntries = pendingEntries
+        .where((entry) => _dayKey(entry.createdAt).isBefore(today))
+        .toList(growable: false);
+    if (dueEntries.isEmpty) return pendingEntries;
+
+    final remainingEntries = pendingEntries
+        .where((entry) => !_dayKey(entry.createdAt).isBefore(today))
+        .toList(growable: false);
+    final entriesToSave =
+        dueEntries.where((entry) => !entry.isDiscarded).toList(growable: false);
+
+    if (entriesToSave.isNotEmpty) {
+      await saveParsedEntry(
+        ParsedMoneyEntry(
+          rawText: entriesToSave.map((entry) => entry.title).join('\n'),
+          items: [
+            for (final entry in entriesToSave)
+              ParsedMoneyItem(
+                name: entry.title,
+                amount: entry.amount,
+                type: entry.type,
+              ),
+          ],
+        ),
+      );
+    }
+
+    await _savePendingEntries(remainingEntries);
+    return remainingEntries;
+  }
+
   void _requireSignedIn(String message) {
     if (!isSignedIn) {
       throw AuthException(message);
     }
+  }
+
+  Future<void> _savePendingEntries(List<MoneyEntry> entries) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _currentPendingEntriesStorageKey,
+      jsonEncode(entries.map((entry) => entry.toJson()).toList()),
+    );
+  }
+
+  String get _currentPendingEntriesStorageKey {
+    final userId = _client.auth.currentUser?.id ?? _accessToken ?? 'anonymous';
+    return '$_pendingEntriesStorageKey.$userId';
+  }
+
+  DateTime _dayKey(DateTime value) {
+    return DateTime(value.year, value.month, value.day);
+  }
+
+  User _requireCurrentUser(String message) {
+    _requireSignedIn(message);
+    final user = _client.auth.currentUser;
+    if (user == null) {
+      throw AuthException(message);
+    }
+    return user;
+  }
+
+  MemberProfile _memberFromRow(Map<String, dynamic>? row) {
+    if (row == null) {
+      throw StateError('ไม่พบข้อมูลสมาชิกของบัญชีนี้');
+    }
+    return MemberProfile.fromJson(Map<String, dynamic>.from(row));
   }
 
   void _applyAuthHeaders(String bearerToken) {
@@ -230,7 +426,7 @@ class AccountingRepository {
     return '$prefix: $data';
   }
 
-  ParsedMoneyEntry? _parseShoppingListText(String text) {
+  static ParsedMoneyEntry? tryParseShoppingListText(String text) {
     final hasNumber = RegExp(r'\d').hasMatch(text);
     final isMeasurementList =
         _hasShoppingMeasurement(text) && !_hasMoneyPriceText(text);
@@ -251,7 +447,7 @@ class AccountingRepository {
           ),
           '',
         )
-        .replaceAll(RegExp(r'[,;|]+'), ' ')
+        .replaceAll(RegExp(r'[\r\n/,;|、，]+'), ' ')
         .replaceAll(RegExp(r'\s+(และ|กับ)\s+'), ' ')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
@@ -272,7 +468,7 @@ class AccountingRepository {
     }
 
     final names = <String>{};
-    for (final name in cleanedText.split(' ')) {
+    for (final name in _splitShoppingListNames(cleanedText)) {
       final value = name.trim();
       if (value.isNotEmpty) names.add(value);
     }
@@ -286,6 +482,37 @@ class AccountingRepository {
           ParsedMoneyItem(name: name, amount: 0, type: EntryType.expense),
       ],
     );
+  }
+
+  static List<String> _splitShoppingListNames(String text) {
+    final names = <String>[];
+    for (final chunk in text.split(' ')) {
+      final value = chunk.trim();
+      if (value.isEmpty) continue;
+      names.addAll(_splitKnownShoppingListWords(value));
+    }
+    return names;
+  }
+
+  static List<String> _splitKnownShoppingListWords(String value) {
+    final names = <String>[];
+    var remaining = value;
+
+    while (remaining.isNotEmpty) {
+      String? matchedName;
+      for (final word in _knownShoppingListWords) {
+        if (remaining.startsWith(word)) {
+          matchedName = word;
+          break;
+        }
+      }
+
+      if (matchedName == null) return [value];
+      names.add(matchedName);
+      remaining = remaining.substring(matchedName.length);
+    }
+
+    return names.length > 1 ? names : [value];
   }
 
   ParsedMoneyEntry? _parseMeasuredPriceText(String text) {
@@ -311,21 +538,21 @@ class AccountingRepository {
     );
   }
 
-  bool _hasShoppingMeasurement(String text) {
+  static bool _hasShoppingMeasurement(String text) {
     return RegExp(
       r'\d+(?:\.\d+)?\s*(นิ้ว|เมตร|ซม\.?|เซน|มม\.?|หุน|กิโล|โล|กก\.?|ชิ้น|อัน|เส้น|แผ่น|ม้วน|แพ็ค|กล่อง|ถุง|ขวด)',
       caseSensitive: false,
     ).hasMatch(text);
   }
 
-  bool _hasMoneyPriceText(String text) {
+  static bool _hasMoneyPriceText(String text) {
     return RegExp(
       r'(บาท|บ\.|฿|ราคา|รวม|ทั้งหมด)',
       caseSensitive: false,
     ).hasMatch(text);
   }
 
-  String _normalizeShoppingItemName(String text) {
+  static String _normalizeShoppingItemName(String text) {
     return text
         .replaceAllMapped(
           RegExp(r'([^\s\d])(\d)'),
@@ -339,7 +566,7 @@ class AccountingRepository {
         .trim();
   }
 
-  String _stripShoppingCommandWords(String text) {
+  static String _stripShoppingCommandWords(String text) {
     return text
         .replaceAll(
           RegExp(

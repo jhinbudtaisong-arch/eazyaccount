@@ -11,7 +11,11 @@ class AuthScreen extends StatefulWidget {
   });
 
   final Future<void> Function(String email, String password) onSignIn;
-  final Future<void> Function(String email, String password) onSignUp;
+  final Future<void> Function(
+    String email,
+    String password,
+    String displayName,
+  ) onSignUp;
   final String? errorMessage;
 
   @override
@@ -20,6 +24,7 @@ class AuthScreen extends StatefulWidget {
 
 class _AuthScreenState extends State<AuthScreen> {
   final _formKey = GlobalKey<FormState>();
+  final _displayNameController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _isSigningUp = false;
@@ -28,6 +33,7 @@ class _AuthScreenState extends State<AuthScreen> {
 
   @override
   void dispose() {
+    _displayNameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
@@ -37,11 +43,12 @@ class _AuthScreenState extends State<AuthScreen> {
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _isSubmitting = true);
+    final displayName = _displayNameController.text.trim();
     final email = _emailController.text.trim();
     final password = _passwordController.text;
 
     if (_isSigningUp) {
-      await widget.onSignUp(email, password);
+      await widget.onSignUp(email, password, displayName);
     } else {
       await widget.onSignIn(email, password);
     }
@@ -106,6 +113,26 @@ class _AuthScreenState extends State<AuthScreen> {
               key: _formKey,
               child: Column(
                 children: [
+                  if (_isSigningUp) ...[
+                    TextFormField(
+                      controller: _displayNameController,
+                      enabled: !_isSubmitting,
+                      textInputAction: TextInputAction.next,
+                      decoration: const InputDecoration(
+                        labelText: 'ชื่อสมาชิกหรือชื่อร้าน',
+                        prefixIcon: Icon(Icons.storefront_outlined),
+                      ),
+                      validator: (value) {
+                        if (!_isSigningUp) return null;
+                        final name = value?.trim() ?? '';
+                        if (name.isEmpty) {
+                          return 'กรุณากรอกชื่อสมาชิกหรือชื่อร้าน';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                   TextFormField(
                     controller: _emailController,
                     enabled: !_isSubmitting,
