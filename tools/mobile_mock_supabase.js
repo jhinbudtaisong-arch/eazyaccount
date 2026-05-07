@@ -38,7 +38,7 @@ function send(res, status, value, extraHeaders = {}) {
     'access-control-allow-origin': '*',
     'access-control-allow-methods': 'GET,POST,PATCH,DELETE,OPTIONS',
     'access-control-allow-headers':
-      'authorization, apikey, content-type, x-client-info, prefer, accept, accept-profile, content-profile, range',
+      'authorization, apikey, content-type, x-client-info, x-supabase-api-version, prefer, accept, accept-profile, content-profile, range',
     'access-control-expose-headers': 'content-range',
     'content-type': 'application/json; charset=utf-8',
     ...extraHeaders,
